@@ -48,7 +48,7 @@ PUT _ingest/pipeline/PowerScale%20Metadata%20Enrichment
         "field": "metadata.dynamic.cluster_name",
         "copy_from": "metadata.cluster_name",
         "override": false,
-        "tag": "Add node pool type",
+        "tag": "Duplicate cluster name as a keyword field",
         "ignore_failure": true
       }
     }
