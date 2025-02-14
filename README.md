@@ -16,6 +16,7 @@ The dashboard has been translated into several languages. In the *dashboard* dir
 
 ![](./images/overview.png)
 
+
 # Installation
 
 It is recommended that when using the example dashboard, the ingest pipeline and index template are created before you start uploading documents into your Elastic Search cluster. If this is not done some of the panels will not have the correct additional fields that the ingest pipeline provides.
@@ -27,6 +28,7 @@ The steps to commplete the install are as follows:
 1. Adding ingest pipeline and index template
 
 2. Import dashboard panels and dashboard
+
 
 ## Adding ingest pipeline and index template
 
@@ -69,6 +71,7 @@ Run the command by clicking somwhere on the PUT line, line 84 in this example, a
 The right hand side of the screen should return a **200 OK** response.
 
 ![](./images/dev_tools_7.png)
+
 
 ## Import dashboard panels and dashboard
 
@@ -118,11 +121,13 @@ If the import is successful, you will see a confirmation screen similar to the o
 
 This concludes the steps required to install the Kibana dashboards.
 
+
 # Viewing the dashboard
 
 To view the dashboard, click on the **Dashboards** option under the **Analytics** section.
 
 ![](./images/usage_1.png)
+
 
 # Panel customization
 
@@ -152,6 +157,7 @@ Then click on **Edit Visualization** in the context menu.
 
 ![](./images/panel_edit_3.png)
 
+
 ## Size histogram
 
 ![](./images/histogram_size_1.png)
@@ -171,12 +177,9 @@ You should adjust the label to represent the correct range. The label is not aut
 ![](./images/histogram_size_4.png)
 
 
-
 ## Date histogram
 
 ![](./images/histogram_date_1.png)
-
-
 
 The date based histograms can be modified to suit your own needs. After selecting the **Edit Visualization** option in the panel's context menu, a screen similar to the one below will be available. To change the size ranges or the number of ranges, select the **Filters** option in the **Vertical axis** section.
 
@@ -187,41 +190,39 @@ Similar to the size histogram panel, a list of date ranges will be displayed aft
 ![](./images/histogram_date_3.png)
 
 
-
 ## File category
 
 ![](./images/histogram_file_category_1.png)
-
 
 
 ## Path based
 
 ![](./images/path_based_consumption_by_pool_1.png)
 
-
-
 There are several panels that use a path as a filter. These paths must be manually modified to fit your environment. All the paths in the example dashboard are just place holder paths and these should be adjusted for your environment.
-
-
 
 After selecting the **Edit Visualization** option in the panel's context menu, a screen similar to the one below will be available. To change the size ranges or the number of ranges, select the **Path** option in the **Vertical axis** section.
 
 ![](./images/path_based_consumption_by_pool_2.png)
 
-
-
 A list of path filters will be presented in a list. Additional paths can be added by clicking on the **Add filter** option at the bottom.
 
 ![](./images/path_based_consumption_by_pool_3.png)
-
-
 
 When selecting a specific path, the filter used needs to be in the format shown below. The field name followed by the actual path for the filter.
 
 e.g. data.file.path: "<some_directory>"
 
-
-
 The path should be enclosed in quotes and it should end with a trailing back slash. The path must start with "/ifs" as all paths in the MetadataIQ index are full paths. Your label needs to be manually set. Using the actual path is advisable but another more useful label could be used instead.
 
 ![](./images/path_based_consumption_by_pool_4.png)
+
+
+# Contribution
+
+Want to contribute? Comments, suggestions, or translation help is appreciated. Open an issue or submit a pull request.
+
+
+# License
+
+[**MIT**](LICENSE)
