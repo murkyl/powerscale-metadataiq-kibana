@@ -1,0 +1,56 @@
+PUT _ingest/pipeline/PowerScale%20Metadata%20Enrichment
+{
+  "processors": [
+    {
+      "grok": {
+        "field": "data.path",
+        "patterns": [
+          "(?<data.file.path>/ifs.*/)"
+        ],
+        "ignore_missing": true,
+        "ignore_failure": true,
+        "description": "Extracts path portion from data.path"
+      }
+    },
+    {
+      "grok": {
+        "field": "data.path",
+        "patterns": [
+          "/ifs.*/(?<data.file.name>.*)"
+        ],
+        "ignore_missing": true,
+        "ignore_failure": true,
+        "description": "Extracts the file name with extension from data.path"
+      }
+    },
+    {
+      "grok": {
+        "field": "data.path",
+        "patterns": [
+          "/ifs.*/.*\\.(?<data.file.extension>.*)"
+        ],
+        "ignore_missing": true,
+        "description": "Extracts the file extension from data.path",
+        "on_failure": [
+          {
+            "set": {
+              "field": "data.file.extension",
+              "value": ".",
+              "override": false,
+              "ignore_failure": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "set": {
+        "field": "metadata.dynamic.cluster_name",
+        "copy_from": "metadata.cluster_name",
+        "override": false,
+        "tag": "Add node pool type",
+        "ignore_failure": true
+      }
+    }
+  ]
+}

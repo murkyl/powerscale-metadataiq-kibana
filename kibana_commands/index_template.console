@@ -1,0 +1,60 @@
+PUT _index_template/powerscale_ingest
+{
+  "index_patterns": [
+    "isi-metadataiq-index*"
+  ],
+  "template": {
+    "settings": {
+      "index": {
+        "default_pipeline": "PowerScale Metadata Enrichment"
+      }
+    },
+    "mappings": {
+      "_routing": {
+        "required": false
+      },
+      "numeric_detection": true,
+      "dynamic_date_formats": [
+        "strict_date_optional_time",
+        "yyyy/MM/dd HH:mm:ss Z||yyyy/MM/dd Z"
+      ],
+      "dynamic": true,
+      "_source": {
+        "excludes": [],
+        "includes": [],
+        "enabled": true
+      },
+      "dynamic_templates": [],
+      "date_detection": true,
+      "properties": {
+        "metadata.dynamic.cluster_name": {
+          "eager_global_ordinals": false,
+          "norms": false,
+          "index": true,
+          "store": false,
+          "type": "keyword",
+          "split_queries_on_whitespace": false,
+          "index_options": "docs",
+          "doc_values": true
+        },
+        "data.file.path": {
+          "type": "text"
+        },
+        "data.file.extension": {
+          "eager_global_ordinals": false,
+          "norms": false,
+          "index": true,
+          "store": false,
+          "type": "keyword",
+          "index_options": "freqs",
+          "split_queries_on_whitespace": false,
+          "doc_values": true
+        },
+        "data.file.name": {
+          "type": "text"
+        }
+      },
+      "subobjects": true
+    }
+  }
+}
