@@ -49,7 +49,7 @@ def translate_descriptions(data, xlate_dict, xlate_keys=None):
     if not xlate_keys:
         xlate_keys = xlate_dict.keys()
     for key in xlate_keys:
-        data = data.replace('"description":"%s"' % key, '"description":"%s"' % xlate_dict[key])
+        data = data.replace('"description":%s' % key, '"description":%s' % json.dumps(xlate_dict[key], ensure_ascii=False))
     return data
 
 
@@ -83,7 +83,7 @@ def translate_labels(data, xlate_dict, xlate_keys=None):
     if not xlate_keys:
         xlate_keys = xlate_dict.keys()
     for key in xlate_keys:
-        data = data.replace('"label":"%s"' % key, '"label":"%s"' % xlate_dict[key])
+        data = data.replace('"label":"%s"' % key, '"label":%s' % json.dumps(xlate_dict[key], ensure_ascii=False))
     return data
 
 
@@ -94,7 +94,7 @@ def translate_panel_json(data, xlate_dict, options=None):
         panel_data = panel_json["panelsJSON"]
         panel_json["panelsJSON"] = translate_keys(panel_data, xlate_dict, options)
         # Replace the old panelsJSON with the new translated one
-        json_output = json.dumps(panel_json, separators=(",", ":"))
+        json_output = json.dumps(panel_json, separators=(",", ":"), ensure_ascii=False)
         data = data.replace(panel, json_output[1:-1])
     return data
 
@@ -103,7 +103,7 @@ def translate_titles(data, xlate_dict, xlate_keys=None):
     if not xlate_keys:
         xlate_keys = xlate_dict.keys()
     for key in xlate_keys:
-        data = data.replace('"title":"%s"' % key, '"title":"%s"' % xlate_dict[key])
+        data = data.replace('"title":"%s"' % key, '"title":%s' % json.dumps(xlate_dict[key], ensure_ascii=False))
     return data
 
 
