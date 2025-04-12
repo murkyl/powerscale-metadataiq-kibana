@@ -27,7 +27,7 @@ PUT _ingest/pipeline/PowerScale%20Metadata%20Enrichment
       "grok": {
         "field": "data.path",
         "patterns": [
-          "/ifs.*/.*\\.(?<data.file.extension>.*)"
+          "/ifs.*/.*\\.(?<data.file.extension>[^\\/]+$)"
         ],
         "ignore_missing": true,
         "description": "Extracts the file extension from data.path",
