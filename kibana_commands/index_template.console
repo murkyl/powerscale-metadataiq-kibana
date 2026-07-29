@@ -6,7 +6,7 @@ PUT _index_template/powerscale_ingest
   "template": {
     "settings": {
       "index": {
-        "default_pipeline": "PowerScale Metadata Enrichment"
+        "default_pipeline": "PowerScaleMetadataEnrichment"
       }
     },
     "mappings": {
@@ -49,9 +49,6 @@ PUT _index_template/powerscale_ingest
           "index_options": "freqs",
           "split_queries_on_whitespace": false,
           "doc_values": true
-        },
-        "data.file.name": {
-          "type": "text"
         }
       },
       "subobjects": true
