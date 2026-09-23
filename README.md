@@ -1,3 +1,4 @@
+
 # Overview
 
 This repository contains an example Kibana dashboard to be used with a Dell PowerScale cluster. The panels in the dashboard are designed to showcase some of the capabilities of the MetadataIQ feature introduced in OneFS 9.10. These examples should be used as a reference to build your own panels or queries. The methods used to build the panels are not necessarily optimal and may not be appropriate for very large data sets in the billions of documents.
@@ -216,6 +217,28 @@ e.g. data.file.path: "<some_directory>"
 The path should be enclosed in quotes and it should end with a trailing back slash. The path must start with "/ifs" as all paths in the MetadataIQ index are full paths. Your label needs to be manually set. Using the actual path is advisable but another more useful label could be used instead.
 
 ![](./images/path_based_consumption_by_pool_4.png)
+
+# Historical and summarized data
+
+MetadataIQ only provides for a most recent, point-in-time, snapshot of the source cluster's file system. Every time MetadataIQ runs, the process will add, remove, and modify existing documents. This process does not provide any historical data point to provide a look at how data usage changes over time. In order to provide this historical data, a script can be used to generate the summaries and then index these values back into ElasticSearch.
+
+The script, pscale_update_summary.py, located in the scripts directory, can be used to generate both cluster capacity summaries as well as directory based summaries. When using the directory summary a list of directories to be summarized is required. Usage of this script is documented in the script itself when run with the --help or by looking in the Python file itself.
+
+There are also 3 example Kibana visualization panels in the dashboard directory that provides a few examples of how to view the data. These can be imported through the Saved Object tool in the Kibana dashboard. The three examples are named:
+ - Cluster capacity usage over time.ndjson
+ - Directory usage over time.ndjson
+ - Node pool capacity usage over time.ndjson
+
+Here is an example of how the script can be used:
+Create 2 files, es_url.txt and es_key.txt and put the full URL to your ElasticSearch instance and your API key into the files respectively. The URL should be in the form: https://fqdn:9200.
+
+    python update_pscale_summary.py --insecure -u @es_url.txt -k @es_key.txt --set-template
+    python update_pscale_summary.py --insecure -u @es_url.txt -k @es_key.txt -cs
+If you have a file called dir_list.txt with a directory name on each line you can run this command:
+
+    python update_ppscale_summary.py --insecure -u @es_url.txt -k @es_key.txt -cs -ds dir_list.txt
+ 
+If your ElasticSearch instance has a valid non-self-signed certificate the --insecure argument can be removed.
 
 
 # Contribution

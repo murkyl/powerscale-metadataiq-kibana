@@ -1,7 +1,7 @@
 PUT _index_template/powerscale_ingest
 {
   "index_patterns": [
-    "isi-metadataiq-index*"
+    "isi-metadataiq-index.*"
   ],
   "template": {
     "settings": {
