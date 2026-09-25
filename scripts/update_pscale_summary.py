@@ -370,7 +370,7 @@ def get_directory_summary(es_client, es_index, dir_paths, ignore_flags=DEFAULT_I
       {
         "bool": {
           "must": [
-            {"match_phrase": {"data.path": path_name}},
+            {"match_phrase_prefix": {"data.path": path_name}},
             {"term": {"data.depth": depth}}
           ],
         },
@@ -406,7 +406,7 @@ def get_directory_summary(es_client, es_index, dir_paths, ignore_flags=DEFAULT_I
 
   sub_paths = [x["fields"]["data.path"][0] for x in resp["hits"]["hits"]]
   agg_filters = {"%s/"%remove_prefix(x, "/ifs"): {"match_phrase_prefix": {"data.file.path": "%s/"%x}} for x in sub_paths}
-  match_paths = [{"match_phrase_prefix": {"data.file.path": "%s/"%x}} for x in sub_paths]
+  match_paths = [{"match_phrase_prefix": {"data.path": "%s/"%x}} for x in sub_paths]
   sub_dir_size_query = {
     "bool": {
       "should": match_paths,
@@ -671,14 +671,13 @@ have the cluster name as a field
   )
   parser.add_argument("--ignore",
     nargs="*",
-    default=["ads"],
+    default=DEFAULT_IGNORE_FLAGS,
     help="""\
 Ignore files with the given OneFS flags. Each flag should follow
 the argument with a space. e.g.:
 --ignore ads ssmartlinked
-By default files with the "ads" attribute are ignored. To include
-all flags, use the --ignore argument with no values
-(Default: "ads")\
+By default all files, including "ads" files are included.
+(Default: Not set)\
 """,
   )
   parser.add_argument("--reset-target",

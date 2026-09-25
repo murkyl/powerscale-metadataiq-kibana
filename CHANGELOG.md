@@ -1,4 +1,8 @@
 # Changelog
+## v1.3.1 - 2026-09-25
+### Change default ignore flags to the empty set so all files are returned
+### Fix incorrect query match for directory paths
+
 ## v1.3.0 - 2026-09-23
 ### Change data view wildcard from isi-metadataiq-index.* to isi-metadataiq-*
 ### Add script to create summary statistics and write into a new isi-metadataiq-summary index
