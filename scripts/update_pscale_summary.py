@@ -5,19 +5,24 @@ update_pscale_summary.py - Create summary statistics for MetadataIQ
 """
 # fmt: off
 __title__      = "update_pscale_summary"
-__version__    = "1.0.0"
-__date__       = "23 September 2026"
+__version__    = "1.1.0"
+__date__       = "30 September 2026"
 __license__    = "MIT"
 __author__     = "Andrew Chung <andrew.chung@dell.com>"
 __maintainer__ = "Andrew Chung <andrew.chung@dell.com>"
 __email__      = "andrew.chung@dell.com"
 # fmt: on
 import argparse
+import collections
 import datetime
+import functools
 import json
 import logging
 import os
 import pathlib
+import platform
+import re
+import ssl
 import sys
 try:
   from elasticsearch8 import Elasticsearch
@@ -35,14 +40,37 @@ except:
     sys.stderr.write("Install elasticsearch8 for ES 8.x and ES 9.x\n")
     sys.stderr.write("pip install elasticsearch8\n")
     sys.exit(99)
+try:
+    import httplib as api
+except ImportError:
+    import http.client as api
+try:
+    from urlparse import urlunsplit
+    from urlparse import urljoin
+    from urllib import urlencode
+except ImportError:
+    from urllib.parse import urlunsplit
+    from urllib.parse import urljoin
+    from urllib.parse import urlencode
+if "OneFS" in platform.system():
+    import isi.rest
+try:
+    basestring
+except:
+    basestring = str
 
 
-DEFAULT_IGNORE_FLAGS = ["ads"]
+API_PAPI = 1
+API_RAN = 2
+API_SUPPORT = 4
+DEFAULT_API_TIMEOUT = 300
+DEFAULT_IGNORE_FLAGS = []
 DEFAULT_LOG_FORMAT = '%(asctime)s - %(module)s|%(funcName)s - %(levelname)s [%(lineno)d] %(message)s'
 DEFAULT_MAX_QUERY_SIZE = 10000
 DEFAULT_TEMPLATE_INDEX_PATTERN = "isi-metadataiq-summary*"
 DEFAULT_TEMPLATE_NAME = "powerscale_summary"
 ES_TIMESTAMP_USEC = 1000
+MAX_SESSION_RETRY = 5
 TEXT_PROGRAM_DESCRIPTION = """\
 NAME
     update_pscale_summary.py - Create summary statistics for MetadataIQ
@@ -131,12 +159,15 @@ USAGE EXAMPLES
     python update_pscale_summary.py -u @es_url.txt -k @es_key.txt --cs
     
     Example doing both a cluster and directory summary
-    python update_pscale_summary.py -u @es_url.txt -k @es_key.txt -cs -ds dir_list.txt
+    python update_pscale_summary.py -cs -ds dir_list.txt -u @es_url.txt -k @es_key.txt
     
     Example where certificate errors are ignored
-    python update_pscale_summary.py --insecure -u @es_url.txt -k @es_key.txt -cs -ds dir_list.txt
+    python update_pscale_summary.py -cs -ds dir_list.txt -u @es_url.txt -k @es_key.txt --insecure
+    
+    Example of getting snapshot data from a cluster
+    python update_pscale_summary.py -ss -cl cluster.com:8080 -cu api_user -cp api_user_password -u @es_url.txt -k @es_key.txt --insecure
 
-QUERYING SUMMARY DATA
+QUERYING DATA
     In order to make use of the summary data, the schema for the data needs to
     be known. Retrieving data can be done through Elastic queries or Kibana
     visualizations. Below is an abbreviated Python dictionary describing the
@@ -145,6 +176,30 @@ QUERYING SUMMARY DATA
     {
       "metadata": {
         "cluster_name": <string: cluster_name>
+      },
+      "snapshot": { # Present for each snapshot on the cluster
+        "created": <date: Timestamp for when the snapshot was created>
+        "expires": <date: Timestamp for when the snapshot expires>
+        "has_locks": <boolean: True if the snapshot is locked>
+        "id": <int: Snapshot ID number>
+        "name": <str: Name of the snapshot>
+        "path": <path: Text with raw as a keyword for the file system path>
+        "pct_filesystem": <float: Percentage of the file system used by this snapshot>
+        "pct_reserve": <float: Percentage of reserve used by this snapshot>
+        "schedule": <str: Snapshot schedule as a OneFS isi-schedule format>
+        "shadow_bytes": <int: Number of shadow store bytes used by this snapshot>
+        "size": <int: Number of bytes used by this snapshot>
+        "state" <keyword: One of active|deleting>
+      },
+      "snapshot_summary": {
+        "aliases": <int: Number of snapshot aliases on the cluster>
+        "active_snaps": <int: Number of snapshots in the active state>
+        "deleting_snaps": <int: Number of snapshots in the deleting state>
+        "pct_filesystem": <float: Percentage of the file system used snapshots>
+        "pct_reserve": <float: Percentage of reserve used by snapshots>
+        "shadow_bytes": <int: Number of shadow store bytes used by snapshots>
+        "size": <int: Number of bytes used by snapshots>
+        "total_snaps": <int: Total number of snapshots on the system>
       },
       "summary": {
         "ads": <int: count of alternative data stream files, counted in "files">
@@ -161,9 +216,15 @@ QUERYING SUMMARY DATA
         "smartlinks": <int: number of files tiered through CloudPools>,
         "symlinks": <int: number of files that are symbolic links>
       },
-      "timestamp": <time:date the data was queried from the source index>,
-      "type": <keyword: possible values: cluster_summary|dir_summary>
+      "timestamp": <time:date the data was queried from the source>,
+      "type": <keyword: possible values: cluster_summary|dir_summary|snapshot_entry|snapshot_summary>
     }
+
+LIMITATIONS
+    Currently, the limit for a single directory summary index is 10,000
+    directories. You can run the script multiple times with different
+    directory lists to increase the total number of directories that are
+    monitored.
 
 ENVIRONMENT VARIABLES
     ELASTIC_URL
@@ -198,9 +259,297 @@ EXIT STATUS
     2   Unable to get a list of cluster index names
     3   Unable to create or delete target index
     4   Unable to set index template
+    5   Cluster URL, user name, and/or password incorrect
     99  Missing Python library\
 """
 LOG = logging.getLogger(__name__)
+TIMEOUT = 10
+URL_CLUSTER_IDENTITY = "/cluster/identity"
+URL_PAPI_SESSION = "/session/1/session"
+URL_PAPI_PLATFORM_PREFIX = "/platform/%s"
+URL_RAN_PLATFORM_PREFIX = "/namespace/%s"
+URL_SNAPSHOT_SNAPSHOTS = "/snapshot/snapshots"
+
+
+def simple_cache(maxsize):
+  def decorator(func):
+    cache = {}
+    @functools.wraps(func)
+    def wrapper(*args):
+      if args not in cache:
+        if len(cache) >= maxsize:
+          cache.popitem()
+        cache[args] = func(*args)
+      return cache[args]
+    return wrapper
+  return decorator
+
+
+class papi_lite:
+    """Initialize the PAPI lite interface
+
+    user: Text string for the user accessing the API. Used only for HTTP connections.
+    password: Text string for the user password. Used only for HTTP connections.
+    server: Text string for server URL without the https:// prefix. Just provide the FQDN/IP address and port. e.g. a.b.c.d:8080. Used only for HTTP connections.
+    ignorecert: Boolean to disable certificate checking. Used only for HTTP connections.
+    oncluster: Boolean or set to None. With a boolean value this will force either usage of internal or not. When set to None, the script will prefer internal API versus HTTP.
+    """
+
+    def __init__(
+        self,
+        user=None,
+        password=None,
+        server=None,
+        ignorecert=True,
+        oncluster=None,
+    ):
+        self.user = user
+        self.password = password
+        self.server = server
+        self.ignorecert = ignorecert
+        self.oncluster = oncluster
+        self.session = None
+        self.csrf = None
+        self.ctx = None
+        if self.oncluster is None:
+            self.oncluster = "OneFS" in platform.system()
+        self.init_http_context()
+
+    def init_http_context(self):
+        if self.oncluster:
+            return
+        self.ctx = ssl.create_default_context()
+        if self.ignorecert:
+            self.ctx.check_hostname = False
+            self.ctx.verify_mode = ssl.CERT_NONE
+
+    def create_http_session(self):
+        """Connects to a OneFS cluster and gets a PAPI session cookie"""
+        if self.oncluster:
+            # When running on cluster skip HTTP session creation
+            return
+        # Cleanup any existing HTTP session
+        self.delete_http_session()
+        headers = {"Content-type": "application/json", "Accept": "application/json"}
+        conn = api.HTTPSConnection(self.server, timeout=TIMEOUT, context=self.ctx)
+        # Always ask for both platform and namespace access
+        data = json.dumps(
+            {
+                "username": self.user,
+                "password": self.password,
+                "services": ["platform", "namespace"],
+            }
+        )
+        try:
+            conn.request("POST", URL_PAPI_SESSION, data, headers)
+        except IOError as ioe:
+            if ioe.errno == 61:
+                raise Exception(
+                    "Could not connect to the server. Check the URL including port number. Port 8080 is default."
+                )
+            raise
+        except Exception:
+            raise
+        resp = conn.getresponse()
+        msg = resp.read()
+        LOG.debug("Response status code: %s" % resp.status)
+        LOG.debug("Response: %s" % msg)
+        LOG.debug("Headers: %s" % resp.getheaders())
+        if resp.status != 200 and resp.status != 201:
+            try:
+                err_msg = json.loads(msg)["message"]
+            except:
+                err_msg = "Error creating PAPI session"
+            raise Exception(err_msg)
+        cookies = resp.getheader("set-cookie").split(";")
+        LOG.debug("Cookies line: %s" % cookies)
+        session = None
+        csrf = None
+        for item in cookies:
+            if "isisessid=" in item:
+                m = re.search(r".*(isisessid=[^;\s]*)", item)
+                if m:
+                    session = m.group(1).strip()
+            if "isicsrf=" in item:
+                m = re.search(r".*(isicsrf=[^;]*)", item)
+                if m:
+                    csrf = m.group(1).strip()
+        LOG.debug("Session: %s, CSRF: %s" % (session, csrf))
+        conn.close()
+        self.session, self.csrf = collections.namedtuple("papi_session", ["session_id", "csrf"])(session, csrf)
+        if self.csrf:
+            self.csrf = self.csrf.split("=")[1]
+
+    def delete_http_session(self):
+        """Cleanup any existing HTTP session"""
+        if self.session and not self.oncluster:
+            # TODO: Add code to disconnect session
+            pass
+        self.session = None
+        self.csrf = None
+
+    def rest_call(
+        self,
+        url,
+        method=None,
+        query_args=None,
+        headers=None,
+        body=None,
+        timeout=DEFAULT_API_TIMEOUT,
+        api_type=API_PAPI,
+        raw=False,
+    ):
+        """Perform a REST call either using HTTPS or when run on an Isilon cluster,
+        use the internal PAPI socket path or internal RAN socket path
+
+        self: Object state
+        url: Can be a full URL string with slashes or an array of strings with no slashes
+        method: HTTP method. GET, POST, PUT, DELETE, etc. Default: GET
+        query_args: Dictionary of key value pairs to be appended to the URL
+        headers: Optional dictionary used to override HTTP headers
+        body: Data to be put into the request body
+        timeout: Number of seconds to wait for command to complete. Only used for the internal REST call
+        api_type: Set to API_PAPI for PAPI calls or API_RAN for RAN calls.
+
+        When using the RAN API, the URL must not include the '/namespace' prefix. The root URL would be: '/ifs'
+        """
+        resume = True
+        response_list = []
+        method = method or "GET"
+        query_args = query_args or {}
+        headers = headers or {}
+        body = body or ""
+        remote_url = url
+        LOG.debug(
+            "REST Call params: Method: %s | URL: %s | Query Args: %s" % (method, remote_url, json.dumps(query_args))
+        )
+        if isinstance(url, basestring):
+            remote_url = [str(x) for x in url.split("/") if x]
+        if self.oncluster:
+            LOG.debug("On cluster query")
+            if api_type == API_RAN:
+                # The RAN internal call requires a special header to be sent and the "namespace" component to be added to the URL
+                headers["SCRIPT_NAME"] = "/namespace"
+                remote_url.insert(0, "namespace")
+            socket_path = (
+                isi.rest.PAPI_SOCKET_PATH * (api_type == API_PAPI)
+                or isi.rest.OAPI_SOCKET_PATH * (api_type == API_RAN)
+                or isi.rest.RSAPI_SOCKET_PATH * (api_type == API_SUPPORT)
+            )
+            while resume:
+                data = isi.rest.send_rest_request(
+                    socket_path=socket_path,
+                    method=method,
+                    uri=remote_url,
+                    query_args=query_args,
+                    headers=headers,
+                    body=body,
+                    timeout=timeout,
+                )
+                if data:
+                    LOG.debug("REST call response: %s" % data[0])
+                    try:
+                        resume = json.loads(data[2])["resume"]
+                        LOG.debug("Resume key: %s" % resume)
+                        query_args = {"resume": str(resume) or ""}
+                    except:
+                        resume = False
+                    response_list.append(data)
+                else:
+                    resume = False
+                    LOG.warning("Error occurred getting data from cluster. URL: %s" % remote_url)
+        else:
+            LOG.debug("HTTPS query")
+            conn = None
+            max_retry = MAX_SESSION_RETRY
+            url_prefix = URL_PAPI_PLATFORM_PREFIX * (api_type == API_PAPI) or URL_RAN_PLATFORM_PREFIX
+            try:
+                while resume:
+                    if not self.session:
+                        self.create_http_session()
+                    headers["Cookie"] = self.session
+                    if self.csrf:
+                        headers["X-CSRF-Token"] = self.csrf
+                        headers["Referer"] = "https://" + self.server
+                    headers["Content-type"] = "application/json"
+                    headers["Accept"] = "application/json"
+                    LOG.debug("Sending headers: %s" % headers)
+                    url = urlunsplit(
+                        [
+                            "",
+                            "",
+                            url_prefix % "/".join(remote_url),
+                            urlencode(query_args),
+                            None,
+                        ]
+                    )
+                    LOG.debug("Method: %s" % method)
+                    LOG.debug("URL: %s" % url)
+                    LOG.debug("Headers: %s" % headers)
+                    # Send request over HTTPS
+                    conn = api.HTTPSConnection(self.server, context=self.ctx)
+                    conn.request(method, url, body, headers=headers)
+                    resp = conn.getresponse()
+                    LOG.debug("HTTPS Response code: %d" % resp.status)
+                    if resp and 200 <= resp.status < 300:
+                        LOG.debug("HTTPS call response: %s" % resp.status)
+                        data = resp.read()
+                        LOG.debug("Raw data: %s" % data)
+                        try:
+                            resume_check = json.loads(data)
+                        except:
+                            resume_check = {}
+                        resume = resume_check.get("resume", None)
+                        LOG.debug("Resume key: %s" % resume)
+                        query_args = {"resume": str(resume) or ""}
+                        response_list.append([resp.status, resp.reason, data])
+                    elif resp.status == 401:
+                        # Our session token has expired so we will re-negotiate a new session
+                        self.session = None
+                        max_retry -= 1
+                        if max_retry:
+                            continue
+                        raise Exception(
+                            "Failed to re-create session token after %d tries. Last try error code: %d"
+                            % (MAX_SESSION_RETRY, resp.status)
+                        )
+                    else:
+                        resume = False
+                        raise Exception("Error occurred getting data from cluster. Error code: %d" % resp.status)
+                if conn:
+                    conn.close()
+            except IOError as ioe:
+                if ioe.errno == 111:
+                    raise Exception("Could not connect to server: %s. Check address and port." % self.server)
+                else:
+                    raise
+        try:
+            # Combine multiple responses into 1
+            response = response_list[0]
+            if response[2]:
+                json_data = json.loads(response[2])
+            else:
+                json_data = {}
+        except Exception as e:
+            if not raw:
+                json_data = {}
+                response = [500, None]
+            else:
+                json_data = response_list[0]
+                response = [0, None]
+        if len(response_list) > 1:
+            keys = list(json_data.keys())
+            try:
+                keys.remove("total")
+            except:
+                pass
+            keys.remove("resume")
+            if len(keys) > 1:
+                raise Exception("More keys remaining in REST call response than we expected: %s" % keys)
+            key = keys[0]
+            for i in range(1, len(response_list)):
+                json_data[key] = json_data[key] + json.loads(response_list[i][2])[key]
+        return response[0], response[1], json_data
 
 
 def create_index(es_client, target_index):
@@ -228,6 +577,19 @@ def get_cluster_list(es_client, source_index):
   except es_exceptions.NotFoundError:
     return None
   return list(resp.keys())
+
+
+@simple_cache(1024)
+def get_cluster_name(papi_client):
+  resp = papi_client.rest_call(
+      URL_CLUSTER_IDENTITY,
+      "GET",
+      query_args={},
+  )
+  if resp[0] != 200:
+    LOG.error("Error in PAPI request to {url}:\n{err}".format(err=str(data), url=URL_CLUSTER_IDENTITY))
+    return None
+  return resp[2]["name"]
 
 
 def get_cluster_summary(es_client, es_index):
@@ -486,6 +848,64 @@ def get_directory_summary(es_client, es_index, dir_paths, ignore_flags=DEFAULT_I
   return results
 
 
+def get_snapshot_summary(papi_client):
+  cluster_name = get_cluster_name(papi_client)
+  resp = papi_client.rest_call(
+      URL_SNAPSHOT_SNAPSHOTS,
+      "GET",
+      query_args={"state": "all"},
+  )
+  if resp[0] != 200:
+    LOG.error("Error in PAPI request to {url}:\n{err}".format(err=str(data), url=URL_SNAPSHOT_SNAPSHOTS))
+    return None
+  now = datetime.datetime.now(datetime.UTC).timestamp()*ES_TIMESTAMP_USEC
+  results = [
+    {
+      "metadata": {
+        "cluster_name": cluster_name,
+      },
+      "snapshot_summary": {
+        "aliases": 0,
+        "active_snaps": 0,
+        "deleting_snaps": 0,
+        "pct_filesystem": 0,
+        "pct_reserve": 0,
+        "shadow_bytes": 0,
+        "size": 0,
+        "total_snaps": 0,
+      },
+      "type": "snapshot_summary",
+      "timestamp": now,
+    }
+  ]
+  summary = results[0]["snapshot_summary"]
+  for snap in resp[2].get("snapshots"):
+    if snap["alias"]:
+      summary["aliases"] += 1
+      continue
+    if snap["state"] == "active":
+      summary["active_snaps"] += 1
+    else:
+      summary["deleting_snaps"] += 1
+    for key in ["pct_filesystem", "pct_reserve", "shadow_bytes", "size"]:
+      summary[key] += snap[key]
+    summary["total_snaps"] += 1
+    snap["created"] = snap["created"]*ES_TIMESTAMP_USEC if snap["created"] else None
+    snap["expires"] = snap["expires"]*ES_TIMESTAMP_USEC if snap["expires"] else None
+    snap.pop("alias", None)
+    snap.pop("target_id", None)
+    snap.pop("target_name", None)
+    results.append({
+      "metadata": {
+        "cluster_name": cluster_name,
+      },
+      "snapshot": snap,
+      "type": "snapshot_entry",
+      "timestamp": now,
+    })
+  return results
+
+
 def remove_prefix(text, prefix):
   if text.startswith(prefix):
     return text[len(prefix):]
@@ -529,6 +949,37 @@ def set_summary_template(es_client, name=DEFAULT_TEMPLATE_NAME, pattern=DEFAULT_
         "numeric_detection": True,
         "properties": {
           "metadata.cluster_name": {"type": "keyword"},
+          "snapshot.alias": {"type": "keyword"},
+          "snapshot.created": {"type": "date"},
+          "snapshot.expires": {"type": "date"},
+          "snapshot.has_locks": {"type": "boolean"},
+          "snapshot.id": {"type": "long"},
+          "snapshot.name": {"type": "keyword"},
+          "snapshot.path": {
+            "type": "text",
+            "fields": {
+              "raw": {
+                "type": "keyword"
+              },
+            },
+            "analyzer": "path_analyzer",
+          },
+          "snapshot.pct_filesystem": {"type": "float"},
+          "snapshot.pct_reserve": {"type": "float"},
+          "snapshot.schedule": {"type": "keyword"},
+          "snapshot.shadow_bytes": {"type": "long"},
+          "snapshot.size": {"type": "long"},
+          "snapshot.state": {"type": "keyword"},
+          "snapshot.target_id": {"type": "long"},
+          "snapshot.target_name": {"type": "keyword"},
+          "snapshot_summary.aliases": {"type": "long"},
+          "snapshot_summary.active_snaps": {"type": "long"},
+          "snapshot_summary.deleting_snaps": {"type": "long"},
+          "snapshot_summary.pct_filesystem": {"type": "float"},
+          "snapshot_summary.pct_reserve": {"type": "float"},
+          "snapshot_summary.shadow_bytes": {"type": "long"},
+          "snapshot_summary.size": {"type": "long"},
+          "snapshot_summary.total_snaps": {"type": "long"},
           "summary.ads": {"type": "long"},
           "summary.cloudpool.logical_size": {"type": "long"},
           "summary.cloudpool.objects": {"type": "long"},
@@ -541,9 +992,9 @@ def set_summary_template(es_client, name=DEFAULT_TEMPLATE_NAME, pattern=DEFAULT_
             "fields": {
               "raw": {
                 "type": "keyword"
-              }
+              },
             },
-            "analyzer": "path_analyzer"
+            "analyzer": "path_analyzer",
           },
           "summary.physical_size": {"type": "long"},
           "summary.smartlinks": {"type": "long"},
@@ -608,6 +1059,12 @@ Make script output verbose
 (Default: Not set)\
 """,
   )
+  parser.add_argument("--version",
+    action="store_true",
+    help="""\
+Output script name and version\
+""",
+  )
   parser.add_argument("-cs", "--cluster-summary",
     action="store_true",
     help="""\
@@ -625,6 +1082,14 @@ Each line in the file should be in the form:
 To add all the children of a directory append /* to the
 directory name:
 /ifs/include/all/children/*
+(Default: Not set)\
+""",
+  )
+  parser.add_argument("-ss", "--snap-summary",
+    action="store_true",
+    help="""\
+Action: gather and update snapshot usage summaries. This action
+requires the cluster URL, user, and password arguments are specified.
 (Default: Not set)\
 """,
   )
@@ -667,6 +1132,47 @@ Can be provided through the environment variable: ELASTIC_TARGET
 A single index can be used for multiple clusters as all docuemnts
 have the cluster name as a field
 (Default: isi-metadataiq-summary)\
+""",
+  )
+  parser.add_argument("-cl", "--cluster-url",
+    nargs="*",
+    default=os.getenv("CLUSTER_URL"),
+    help="""\
+PowerScale host and port value. e.g. mycluster.com:8080
+If multiple clusters are to be monitored, the file format is required
+and each line in the file should be their own host:port pair.
+Can be provided through the environment variable: CLUSTER_URL
+If the string is of the form @file where "file" is a file name, the
+the URL will be read from the file
+(Default: Not set)\
+""",
+  )
+  parser.add_argument("-cu", "--cluster-user",
+    nargs="*",
+    default=os.getenv("CLUSTER_USER"),
+    help="""\
+PowerScale user with appropriate PAPI permissions.
+If multiple clusters are to be monitored, the file format is required
+and each line in the file should be the user for cluster in the same
+order as the cluster URLs are listed.
+Can be provided through the environment variable: CLUSTER_USER
+If the string is of the form @file where "file" is a file name, the
+the URL will be read from the file
+(Default: Not set)\
+""",
+  )
+  parser.add_argument("-cp", "--cluster-password",
+    nargs="*",
+    default=os.getenv("CLUSTER_PASSWORD"),
+    help="""\
+Password for the provided cluster user.
+If multiple clusters are to be monitored, the file format is required
+and each line in the file should be the password for cluster in the
+same order as the cluster URLs are listed.
+Can be provided through the environment variable: CLUSTER_PASSWORD
+If the string is of the form @file where "file" is a file name, the
+the URL will be read from the file
+(Default: Not set)\
 """,
   )
   parser.add_argument("--ignore",
@@ -714,6 +1220,8 @@ that is modified randomly adding and subtracting capacity
 """,
   )
   args = parser.parse_args()
+  client = None
+  papi = []
   if args.verbose > 1:
     LOG.setLevel(logging.DEBUG)
   else:
@@ -721,22 +1229,36 @@ that is modified randomly adding and subtracting capacity
   if not (args.url or args.key):
     LOG.error("A URL and API key are required arguments.")
     sys.exit(1)
-  if args.key.startswith("@"):
-    with open(args.key[1:], "r") as f:
-      args.key = f.readline().strip()
-  if args.url.startswith("@"):
-    with open(args.url[1:], "r") as f:
-      args.url = f.readline().strip()
+  for argvar in ["key", "url"]:
+    if getattr(args, argvar).startswith("@"):
+      with open(getattr(args, argvar)[1:], "r") as f:
+        setattr(args, argvar, f.readline().strip())
+  for argvar in ["cluster_url", "cluster_user", "cluster_password"]:
+    if getattr(args, argvar)[0].startswith("@"):
+      with open(getattr(args, argvar)[0][1:], "r") as f:
+        setattr(args, argvar, [x.strip() for x in f.readlines()])
   if args.verbose > 2:
     LOG.debug(args)
+  if args.version:
+    sys.stdout.write("%s %s (%s)\n"%(__title__, __version__, __date__))
+    sys.exit(0)
   
-  ignore_flags = ["ads"]
   client = Elasticsearch(
     api_key=args.key,
     hosts=[args.url],
     verify_certs=not args.insecure,
     ssl_show_warn=not args.insecure,
   )
+  
+  if args.cluster_url and args.cluster_user and args.cluster_password:
+    if len(set([
+      len(args.cluster_url),
+      len(args.cluster_user),
+      len(args.cluster_password)
+      ]
+    )) != 1:
+      LOG.error("Cluster URL, user name, and password lengths do not match")
+      sys.exit(5)
 
   source_cluster_list = get_cluster_list(client, args.source)
   if not source_cluster_list:
@@ -785,7 +1307,7 @@ that is modified randomly adding and subtracting capacity
       with open(args.dir_summary, "r") as f:
         dir_paths = [x.strip() for x in f.readlines()]
       LOG.debug("Using the following directory paths: %s"%dir_paths)
-      results = get_directory_summary(client, cluster_index, dir_paths, ignore_flags)
+      results = get_directory_summary(client, cluster_index, dir_paths, args.ignore)
       if results:
         if not args.simulate:
           resp = helpers.bulk(client, results, index=args.target)
@@ -796,6 +1318,25 @@ that is modified randomly adding and subtracting capacity
       else:
         LOG.error("Unable to get directory summary: %s"%cluster_index)
       LOG.info("Directory summary complete: %s"%cluster_index)
+
+    if args.snap_summary:
+      LOG.info("Gather snapshot summary")
+      for i in range(len(args.cluster_url)):
+        LOG.info("Gathering snapshot data for: %s"%args.cluster_url[i])
+        papi.append(papi_lite(
+          ignorecert=args.insecure,
+          password=args.cluster_password[i],
+          server=args.cluster_url[i],
+          user=args.cluster_user[i],
+        ))
+        results = get_snapshot_summary(papi[i])
+        if results:
+          if not args.simulate:
+            resp = helpers.bulk(client, results, index=args.target)
+            LOG.debug("Bulk index result: %s"%str(resp))
+        else:
+          LOG.error("Unable to get cluster snapshot for: %s"%args.cluster_url[i])
+      LOG.info("Cluster snapshot summary complete")
 
   sys.exit(0)
 
