@@ -1,4 +1,7 @@
 # Changelog
+## v1.4.0 - 2026-09-30
+### Updated the summary script and added support for snapshot usage summary
+
 ## v1.3.1 - 2026-09-25
 ### Change default ignore flags to the empty set so all files are returned
 ### Fix incorrect query match for directory paths
